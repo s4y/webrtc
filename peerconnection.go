@@ -59,11 +59,12 @@ type PeerConnection struct {
 	greaterMid int
 
 	rtpTransceivers []*RTPTransceiver
+	streams         map[string]*Stream
 
 	onSignalingStateChangeHandler     func(SignalingState)
 	onICEConnectionStateChangeHandler func(ICEConnectionState)
 	onConnectionStateChangeHandler    func(PeerConnectionState)
-	onTrackHandler                    func(*Track, *RTPReceiver)
+	onTrackHandler                    func(*Track, []*Stream)
 	onDataChannelHandler              func(*DataChannel)
 
 	iceGatherer   *ICEGatherer
@@ -109,6 +110,7 @@ func (api *API) NewPeerConnection(configuration Configuration) (*PeerConnection,
 		signalingState:     SignalingStateStable,
 		iceConnectionState: ICEConnectionStateNew,
 		connectionState:    PeerConnectionStateNew,
+		streams:            make(map[string]*Stream),
 
 		api: api,
 		log: api.settingEngine.LoggerFactory.NewLogger("pc"),
@@ -258,20 +260,20 @@ func (pc *PeerConnection) OnICEGatheringStateChange(f func(ICEGathererState)) {
 
 // OnTrack sets an event handler which is called when remote track
 // arrives from a remote peer.
-func (pc *PeerConnection) OnTrack(f func(*Track, *RTPReceiver)) {
+func (pc *PeerConnection) OnTrack(f func(*Track, []*Stream)) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	pc.onTrackHandler = f
 }
 
-func (pc *PeerConnection) onTrack(t *Track, r *RTPReceiver) {
+func (pc *PeerConnection) onTrack(t *Track, s []*Stream) {
 	pc.mu.RLock()
 	hdlr := pc.onTrackHandler
 	pc.mu.RUnlock()
 
 	pc.log.Debugf("got new track: %+v", t)
 	if hdlr != nil && t != nil {
-		go hdlr(t, r)
+		go hdlr(t, s)
 	}
 }
 
@@ -900,6 +902,21 @@ func (pc *PeerConnection) startReceiver(incoming trackDetails, receiver *RTPRece
 		receiver.tracks[i].track.mu.Unlock()
 	}
 
+	pc.mu.RLock()
+	stream := pc.streams[incoming.label]
+	pc.mu.RUnlock()
+	if stream == nil {
+		stream = &Stream{
+			ID:     incoming.label,
+			tracks: []*Track{receiver.Track()},
+		}
+		pc.mu.Lock()
+		pc.streams[incoming.label] = stream
+		pc.mu.Unlock()
+	} else if stream.GetTrackByID(incoming.id) == nil {
+		stream.AddTrack(receiver.Track())
+	}
+
 	// We can't block and wait for a single SSRC
 	if incoming.ssrc == 0 {
 		return
@@ -926,7 +943,7 @@ func (pc *PeerConnection) startReceiver(incoming trackDetails, receiver *RTPRece
 		receiver.Track().mu.Unlock()
 
 		if pc.onTrackHandler != nil {
-			pc.onTrack(receiver.Track(), receiver)
+			pc.onTrack(receiver.Track(), []*Stream{stream})
 		} else {
 			pc.log.Warnf("OnTrack unset, unable to handle incoming media streams")
 		}
