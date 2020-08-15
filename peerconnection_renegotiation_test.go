@@ -82,7 +82,7 @@ func TestPeerConnection_Renegotiation_AddTrack(t *testing.T) {
 
 	haveRenegotiated := &atomicBool{}
 	onTrackFired, onTrackFiredFunc := context.WithCancel(context.Background())
-	pcAnswer.OnTrack(func(track *Track, r *RTPReceiver) {
+	pcAnswer.OnTrack(func(track *Track, s []*Stream) {
 		if !haveRenegotiated.get() {
 			t.Fatal("OnTrack was called before renegotiation")
 		}
@@ -165,7 +165,7 @@ func TestPeerConnection_Renegotiation_AddTrack_Multiple(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pcAnswer.OnTrack(func(track *Track, r *RTPReceiver) {
+	pcAnswer.OnTrack(func(track *Track, s []*Stream) {
 		onTrackCount[track.Label()]++
 		onTrackChan <- struct{}{}
 	})
@@ -210,7 +210,7 @@ func TestPeerConnection_Renegotiation_AddTrack_Rename(t *testing.T) {
 	haveRenegotiated := &atomicBool{}
 	onTrackFired, onTrackFiredFunc := context.WithCancel(context.Background())
 	var atomicRemoteTrack atomic.Value
-	pcOffer.OnTrack(func(track *Track, r *RTPReceiver) {
+	pcOffer.OnTrack(func(track *Track, s []*Stream) {
 		if !haveRenegotiated.get() {
 			t.Fatal("OnTrack was called before renegotiation")
 		}
@@ -368,7 +368,7 @@ func TestPeerConnection_Renegotiation_CodecChange(t *testing.T) {
 
 	tracksCh := make(chan *Track)
 	tracksClosed := make(chan struct{})
-	pcAnswer.OnTrack(func(track *Track, r *RTPReceiver) {
+	pcAnswer.OnTrack(func(track *Track, s []*Stream) {
 		tracksCh <- track
 		for {
 			if _, readErr := track.ReadRTP(); readErr == io.EOF {
@@ -464,7 +464,7 @@ func TestPeerConnection_Renegotiation_RemoveTrack(t *testing.T) {
 	onTrackFired, onTrackFiredFunc := context.WithCancel(context.Background())
 	trackClosed, trackClosedFunc := context.WithCancel(context.Background())
 
-	pcAnswer.OnTrack(func(track *Track, r *RTPReceiver) {
+	pcAnswer.OnTrack(func(track *Track, s []*Stream) {
 		onTrackFiredFunc()
 
 		for {
@@ -501,7 +501,7 @@ func TestPeerConnection_RoleSwitch(t *testing.T) {
 	}
 
 	onTrackFired, onTrackFiredFunc := context.WithCancel(context.Background())
-	pcFirstOfferer.OnTrack(func(track *Track, r *RTPReceiver) {
+	pcFirstOfferer.OnTrack(func(track *Track, s []*Stream) {
 		onTrackFiredFunc()
 	})
 
@@ -611,7 +611,7 @@ func TestPeerConnection_Renegotiation_SetLocalDescription(t *testing.T) {
 	}
 
 	onTrackFired, onTrackFiredFunc := context.WithCancel(context.Background())
-	pcOffer.OnTrack(func(track *Track, r *RTPReceiver) {
+	pcOffer.OnTrack(func(track *Track, s []*Stream) {
 		onTrackFiredFunc()
 	})
 

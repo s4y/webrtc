@@ -1,3 +1,5 @@
+// +build !js
+
 package webrtc
 
 import "sync"
@@ -60,7 +62,7 @@ func (s *Stream) OnRemoveTrack(f func(*Track)) {
 func (s *Stream) GetTrackByID(id string) *Track {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for i, track := range s.tracks {
+	for _, track := range s.tracks {
 		if track.ID() == id {
 			return track
 		}
