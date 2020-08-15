@@ -879,6 +879,25 @@ func (pc *PeerConnection) SetRemoteDescription(desc SessionDescription) error {
 	return nil
 }
 
+func (pc *PeerConnection) streamForTrack(id string, track *Track) *Stream {
+	pc.mu.RLock()
+	stream := pc.streams[id]
+	pc.mu.RUnlock()
+
+	if stream == nil { // No stream exists for id, create one
+		stream = &Stream{
+			ID:     id,
+			tracks: []*Track{track},
+		}
+		pc.mu.Lock()
+		pc.streams[id] = stream
+		pc.mu.Unlock()
+	} else if stream.GetTrackByID(track.ID()) == nil { // Stream exists but track hasn't been added, add it
+		stream.AddTrack(track)
+	}
+	return stream
+}
+
 func (pc *PeerConnection) startReceiver(incoming trackDetails, receiver *RTPReceiver) {
 	encodings := []RTPDecodingParameters{}
 	if incoming.ssrc != 0 {
@@ -902,20 +921,7 @@ func (pc *PeerConnection) startReceiver(incoming trackDetails, receiver *RTPRece
 		receiver.tracks[i].track.mu.Unlock()
 	}
 
-	pc.mu.RLock()
-	stream := pc.streams[incoming.label]
-	pc.mu.RUnlock()
-	if stream == nil {
-		stream = &Stream{
-			ID:     incoming.label,
-			tracks: []*Track{receiver.Track()},
-		}
-		pc.mu.Lock()
-		pc.streams[incoming.label] = stream
-		pc.mu.Unlock()
-	} else if stream.GetTrackByID(incoming.id) == nil {
-		stream.AddTrack(receiver.Track())
-	}
+	stream := pc.streamForTrack(incoming.label, receiver.Track())
 
 	// We can't block and wait for a single SSRC
 	if incoming.ssrc == 0 {
@@ -979,12 +985,9 @@ func (pc *PeerConnection) startRTPReceivers(incomingTracks []trackDetails, curre
 	}
 
 	unhandledTracks := incomingTracks[:0]
-	for i := range incomingTracks {
+	for _, incomingTrack := range incomingTracks {
 		trackHandled := false
-		for j := range localTransceivers {
-			t := localTransceivers[j]
-			incomingTrack := incomingTracks[i]
-
+		for _, t := range localTransceivers {
 			if t.Mid() != incomingTrack.mid {
 				continue
 			}
@@ -1002,7 +1005,7 @@ func (pc *PeerConnection) startRTPReceivers(incomingTracks []trackDetails, curre
 		}
 
 		if !trackHandled {
-			unhandledTracks = append(unhandledTracks, incomingTracks[i])
+			unhandledTracks = append(unhandledTracks, incomingTrack)
 		}
 	}
 
@@ -1159,7 +1162,9 @@ func (pc *PeerConnection) handleUndeclaredSSRC(rtpStream io.Reader, ssrc uint32)
 			if err != nil {
 				return err
 			}
-			pc.onTrack(track, t.Receiver())
+
+			stream := pc.streamForTrack(track.Label(), track)
+			pc.onTrack(track, []*Stream{stream})
 			return nil
 		}
 	}
@@ -1785,6 +1790,8 @@ func (pc *PeerConnection) startRTP(isRenegotiation bool, remoteDesc *SessionDesc
 	trackDetails := trackDetailsFromSDP(pc.log, remoteDesc.parsed)
 	if isRenegotiation {
 		for _, t := range currentTransceivers {
+			// Is `SendOnly` transceiver or receiver has no track. Receivers with no track
+			// might get a track later when `Receive()` is called on the receiver.
 			if t.Receiver() == nil || t.Receiver().Track() == nil {
 				continue
 			}
@@ -1792,6 +1799,8 @@ func (pc *PeerConnection) startRTP(isRenegotiation bool, remoteDesc *SessionDesc
 			t.Receiver().Track().mu.Lock()
 			ssrc := t.Receiver().Track().ssrc
 
+			// If receiver already exists for track ssrc, set id/label.
+			// Why do we do this? Is there a case where the track id/label changes?
 			if details := trackDetailsForSSRC(trackDetails, ssrc); details != nil {
 				t.Receiver().Track().id = details.id
 				t.Receiver().Track().label = details.label
@@ -1801,11 +1810,25 @@ func (pc *PeerConnection) startRTP(isRenegotiation bool, remoteDesc *SessionDesc
 
 			t.Receiver().Track().mu.Unlock()
 
+			// Execution reaches here when a peer connection is renegotiated
+			// and a previous track has been removed.
+
+			// If this receiver doesnt match a ssrc in the track details, stop it.
 			if err := t.Receiver().Stop(); err != nil {
 				pc.log.Warnf("Failed to stop RtpReceiver: %s", err)
 				continue
 			}
 
+			// Remove the tracks from its Stream.
+			pc.mu.RLock()
+			for _, track := range t.Receiver().Tracks() {
+				pc.streams[track.Label()].RemoveTrack(track)
+			}
+			pc.mu.RUnlock()
+
+			// We create a new receiver to replace the stopped one. This is done
+			// since a transceiver might still be active and its receiver could
+			// be reused in the future.
 			receiver, err := pc.api.NewRTPReceiver(t.Receiver().kind, pc.dtlsTransport)
 			if err != nil {
 				pc.log.Warnf("Failed to create new RtpReceiver: %s", err)
